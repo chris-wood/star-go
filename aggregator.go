@@ -163,8 +163,8 @@ func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error)
 			}
 
 			// Verify that input leads to output based on public function
-			keySeed, _ := deriveShareSecrets(a.config.KDF(), msg)
-			if !bytes.Equal(keySeed, keySeed) {
+			derivedKeySeed, _ := deriveShareSecrets(a.config.KDF(), msg)
+			if !bytes.Equal(derivedKeySeed, keySeed) {
 				log.Println("Garbage report detected (deterministic key seed derivation mismatch)")
 				output.invalidReports = append(output.invalidReports, reports[i])
 				continue
