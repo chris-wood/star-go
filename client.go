@@ -61,19 +61,18 @@ func (c AggregateContext) deriveShareAndSecrets(kdf KDF, aead KCAEAD) (Share, []
 	// rand_prk = Extract(nil, rand)
 	// key_seed = Expand(rand_prk, "key_seed", 16)
 	// share_coins = Expand(rand_prk, "share_coins", 16)
-
-	keySeed, shareCoins := deriveShareSecrets(kdf, c.rand)
+	shareSecret, shareCoins := deriveShareSecrets(kdf, c.rand)
 
 	// // Share generation
 	// rand_share, key_seed, commitment = Share(REPORT_THRESHOLD, TBD, key_seed, share_coins, nil)
 	splitter := c.client.config.Splitter()
-	randShare, keySeed := splitter.Share(REPORT_THRESHOLD, keySeed, shareCoins)
+	randShare, encodedSecret := splitter.Share(REPORT_THRESHOLD, shareSecret, shareCoins)
 
 	// // Symmetric encryption key derivation
 	// key_prk = Extract(nil, key_seed)
 	// key = Expand(key_prk, "key", Nk)
 	// nonce = Expand(key_prk, "nonce", Nn)
-	key, nonce := deriveEncryptionSecrets(kdf, aead, keySeed)
+	key, nonce := deriveEncryptionSecrets(kdf, aead, encodedSecret)
 
 	return randShare, key, nonce
 }

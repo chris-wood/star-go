@@ -34,6 +34,7 @@ var (
 type SecretSplitter interface {
 	EmptyShare() Share
 	RandomShare() Share
+	EncodeSecret(msg []byte) []byte
 	Share(k int, msg, randomness []byte) (Share, []byte)
 	Recover(k int, shares []Share) ([]byte, error)
 }
@@ -189,6 +190,15 @@ func (s *ShamirSplitter) RandomShare() Share {
 		y:          group.Ristretto255.RandomScalar(rand.Reader),
 		commitment: nil,
 	}
+}
+
+func (s *ShamirSplitter) EncodeSecret(secret []byte) []byte {
+	secretCoefficient := hashToField(secret, 1)[0]
+	baseEnc, err := secretCoefficient.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	return baseEnc
 }
 
 func (s *ShamirSplitter) Share(k int, secret, randomness []byte) (Share, []byte) {
@@ -368,6 +378,15 @@ func (s *FeldmanSplitter) RandomShare() Share {
 		y:           group.Ristretto255.RandomScalar(rand.Reader),
 		commitments: nil, // XXX(caw): this should take in the threshold so we can generate the appropriate number of commitments
 	}
+}
+
+func (s *FeldmanSplitter) EncodeSecret(secret []byte) []byte {
+	secretCoefficient := hashToField(secret, 1)[0]
+	baseEnc, err := secretCoefficient.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	return baseEnc
 }
 
 func (s *FeldmanSplitter) Share(k int, msg, randomness []byte) (Share, []byte) {
@@ -550,6 +569,15 @@ func (s *PedersenSplitter) RandomShare() Share {
 	}
 }
 
+func (s *PedersenSplitter) EncodeSecret(secret []byte) []byte {
+	secretCoefficient := hashToField(secret, 1)[0]
+	baseEnc, err := secretCoefficient.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	return baseEnc
+}
+
 func (s *PedersenSplitter) Share(k int, msg, randomness []byte) (Share, []byte) {
 	secret := hashToField(msg, 1)[0]
 	t := group.Ristretto255.RandomScalar(rand.Reader)
@@ -637,7 +665,7 @@ func (s *PedersenSplitter) Recover(k int, shares []Share) ([]byte, error) {
 type RandomnessClient interface {
 	Blind(element []byte) (RandomnessClientState, []byte)
 	IsVerifiable() bool
-	Verify(input, authenticator []byte) error
+	Verify(input, authenticator []byte) ([]byte, error)
 }
 
 type RandomnessServer interface {
@@ -679,9 +707,15 @@ func (r BlindRSAClient) IsVerifiable() bool {
 	return true
 }
 
-func (r BlindRSAClient) Verify(input, authenticator []byte) error {
+func (r BlindRSAClient) Verify(input, authenticator []byte) ([]byte, error) {
 	verifier := blindrsa.NewDeterministicRSAVerifier(r.publicKey, crypto.SHA512)
-	return verifier.Verify(input, authenticator)
+	err := verifier.Verify(input, authenticator)
+	if err != nil {
+		return nil, err
+	}
+
+	rand := sha512.Sum512(append(input, authenticator...))
+	return rand[:], nil
 }
 
 // XXX(caw): make this function fallible
@@ -756,7 +790,7 @@ func (r Ristretto255VOPRFClient) IsVerifiable() bool {
 	return false
 }
 
-func (r Ristretto255VOPRFClient) Verify(input, authenticator []byte) error {
+func (r Ristretto255VOPRFClient) Verify(input, authenticator []byte) ([]byte, error) {
 	panic("Non-interactive verification not supported")
 }
 

@@ -155,7 +155,7 @@ func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error)
 
 		// If the authenticator is non-empty, then verify it
 		if client.IsVerifiable() {
-			err := client.Verify(msg, authenticator)
+			rand, err := client.Verify(msg, authenticator)
 			if err != nil {
 				log.Println("Garbage report detected (message authentication failed):", err)
 				output.invalidReports = append(output.invalidReports, reports[i])
@@ -163,7 +163,8 @@ func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error)
 			}
 
 			// Verify that input leads to output based on public function
-			derivedKeySeed, _ := deriveShareSecrets(a.config.KDF(), msg)
+			shareSecret, _ := deriveShareSecrets(a.config.KDF(), rand)
+			derivedKeySeed := a.config.Splitter().EncodeSecret(shareSecret)
 			if !bytes.Equal(derivedKeySeed, keySeed) {
 				log.Println("Garbage report detected (deterministic key seed derivation mismatch)")
 				output.invalidReports = append(output.invalidReports, reports[i])
