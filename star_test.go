@@ -24,7 +24,7 @@ func generateGarbageReport(client Client, randomizer RandomnessServer, msg, fake
 	return reportContext.ReportGarbage(metadata, fakeMessage)
 }
 
-func TestSTARW(t *testing.T) {
+func TestSTAR(t *testing.T) {
 	var configurations = []struct {
 		aggregatorConfig   AggregatorConfig
 		randomizerConfig   RandomizerConfig
