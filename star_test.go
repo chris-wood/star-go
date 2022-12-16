@@ -211,9 +211,11 @@ func runBenchmark(b *testing.B, config benchmarkConfig) {
 	client := NewClient(aggregateConfig, randomizerConfig.PublicConfig())
 	fixedMetadata := []byte("")
 
+	name := fmt.Sprintf("(%s-%s-%d-%d-%d-%d)", aggregateConfig.Name(), randomizerConfig.Name(), config.inputLen, config.inputCount, config.sampleCount, threshold)
+
 	var err error
 	var reports []Report
-	b.Run(fmt.Sprintf("Report-%s", config.name), func(b *testing.B) {
+	b.Run(fmt.Sprintf("Report-%s", name), func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
 			reports = make([]Report, config.sampleCount)
 			for i := 0; i < config.sampleCount; i++ {
@@ -225,7 +227,7 @@ func runBenchmark(b *testing.B, config benchmarkConfig) {
 		}
 	})
 
-	b.Run(fmt.Sprintf("Aggregate-%s", config.name), func(b *testing.B) {
+	b.Run(fmt.Sprintf("Aggregate-%s", name), func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
 			aggregator := NewAggregator(randomizerConfig.PublicConfig(), aggregateConfig)
 
@@ -254,7 +256,6 @@ func BenchmarkSTAR(b *testing.B) {
 
 	benchmarkConfigurations := []benchmarkConfig{
 		{
-			name:              "TODO1",
 			splitter:          basicSplitter,
 			kdf:               kdf,
 			aead:              aead,
@@ -264,7 +265,6 @@ func BenchmarkSTAR(b *testing.B) {
 			thresholdFraction: 0.01,  // 0.001,
 		},
 		{
-			name:              "TODO2",
 			splitter:          basicSplitter,
 			kdf:               kdf,
 			aead:              aead,
@@ -274,7 +274,6 @@ func BenchmarkSTAR(b *testing.B) {
 			thresholdFraction: 0.1,   // 0.001,
 		},
 		{
-			name:              "TODO3",
 			splitter:          feldmanSplitter,
 			kdf:               kdf,
 			aead:              aead,
@@ -283,16 +282,15 @@ func BenchmarkSTAR(b *testing.B) {
 			sampleCount:       10000, // 100000,
 			thresholdFraction: 0.01,  // 0.001,
 		},
-		// {
-		// 	name:              "TODO4",
-		// 	splitter:          feldmanSplitter,
-		// 	kdf:               kdf,
-		// 	aead:              aead,
-		// 	inputLen:          32,
-		// 	inputCount:        1000,  // 10000,
-		// 	sampleCount:       10000, // 100000,
-		// 	thresholdFraction: 0.1,   // 0.001,
-		// },
+		{
+			splitter:          feldmanSplitter,
+			kdf:               kdf,
+			aead:              aead,
+			inputLen:          32,
+			inputCount:        1000,  // 10000,
+			sampleCount:       10000, // 100000,
+			thresholdFraction: 0.1,   // 0.001,
+		},
 	}
 
 	for i := range benchmarkConfigurations {

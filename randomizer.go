@@ -14,6 +14,7 @@ var (
 )
 
 type RandomizerConfig interface {
+	Name() string
 	PublicConfig() RandomizerPublicConfig
 	NewServer() RandomnessServer
 }
@@ -40,6 +41,10 @@ func NewDefaultRandomizerConfig() RandomizerConfig {
 	return VOPRFRandomizerConfig{
 		seed: seed,
 	}
+}
+
+func (c VOPRFRandomizerConfig) Name() string {
+	return "VOPRF"
 }
 
 func (c VOPRFRandomizerPublicConfig) NewClient() RandomnessClient {
@@ -84,4 +89,8 @@ func (c BlindRSARandomizerConfig) PublicConfig() RandomizerPublicConfig {
 
 func (c BlindRSARandomizerConfig) NewServer() RandomnessServer {
 	return NewBlindRSAServer(c.privateKey)
+}
+
+func (c BlindRSARandomizerConfig) Name() string {
+	return "BlindRSA"
 }

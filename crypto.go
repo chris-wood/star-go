@@ -32,6 +32,7 @@ var (
 )
 
 type SecretSplitter interface {
+	Name() string
 	EmptyShare() Share
 	RandomShare() Share
 	EncodeSecret(msg []byte) []byte
@@ -40,6 +41,10 @@ type SecretSplitter interface {
 }
 
 type ShamirSplitter struct {
+}
+
+func (s ShamirSplitter) Name() string {
+	return "Basic"
 }
 
 func hashToField(msg []byte, ctx []byte) group.Scalar {
@@ -266,6 +271,10 @@ func (s *ShamirSplitter) Recover(k int, shares []Share) ([]byte, error) {
 }
 
 type FeldmanSplitter struct {
+}
+
+func (s FeldmanSplitter) Name() string {
+	return "Feldman"
 }
 
 type FeldmanShare struct {
@@ -514,6 +523,10 @@ func (s *FeldmanSplitter) Recover(k int, shares []Share) ([]byte, error) {
 }
 
 type PedersenSplitter struct {
+}
+
+func (s PedersenSplitter) Name() string {
+	return "Pedersen"
 }
 
 type PedersenShare struct {

@@ -11,6 +11,7 @@ import (
 
 // XXX(caw): rename to public config?
 type AggregatorConfig interface {
+	Name() string
 	Threshold() int
 	Splitter() SecretSplitter
 	KDF() KDF
@@ -32,6 +33,11 @@ func NewDefaultAggregatorConfiguration(threshold int) AggregatorConfig {
 		kdf:       kdf,
 		aead:      Aes128GcmHmacKCAEAD{kdf: kdf},
 	}
+}
+
+func (c GenericAggregatorConfiguration) Name() string {
+	// XXX(caw): return more than the splitter's name
+	return c.splitter.Name()
 }
 
 func (c GenericAggregatorConfiguration) Threshold() int {
@@ -105,9 +111,6 @@ func (a Aggregator) AggregateBucket(bucket []byte) (*AggregateOutput, error) {
 		return nil, fmt.Errorf("Invalid bucket ID")
 	}
 
-	// XXX(caw): split into threshold-sized values for aggregation?
-	// reportSubset := reports[:a.config.Threshold()]
-
 	return a.AggregateReports(reports)
 }
 
@@ -118,19 +121,6 @@ func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error)
 	for i := range reports {
 		shares[i] = reports[i].randShare
 	}
-
-	// // Require that each commitment is identical
-	// var expectedComitment []byte
-	// for i := range shares {
-	// 	if expectedComitment == nil {
-	// 		expectedComitment = shares[i].Commitment()
-	// 	} else {
-	// 		commitment := shares[i].Commitment()
-	// 		if !bytes.Equal(expectedComitment, commitment) {
-	// 			return nil, fmt.Errorf("Invalid share set")
-	// 		}
-	// 	}
-	// }
 
 	combiner := a.config.Splitter()
 	keySeed, err := combiner.Recover(a.config.Threshold(), shares)
