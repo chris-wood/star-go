@@ -4,10 +4,6 @@ import (
 	"encoding/binary"
 )
 
-var (
-	REPORT_THRESHOLD = 10
-)
-
 type Client struct {
 	config       AggregatorConfig
 	randomConfig RandomizerPublicConfig
@@ -66,7 +62,7 @@ func (c AggregateContext) deriveShareAndSecrets(kdf KDF, aead KCAEAD) (Share, []
 	// // Share generation
 	// rand_share, key_seed, commitment = Share(REPORT_THRESHOLD, TBD, key_seed, share_coins, nil)
 	splitter := c.client.config.Splitter()
-	randShare, encodedSecret := splitter.Share(REPORT_THRESHOLD, shareSecret, shareCoins)
+	randShare, encodedSecret := splitter.Share(c.client.config.Threshold(), shareSecret, shareCoins)
 
 	// // Symmetric encryption key derivation
 	// key_prk = Extract(nil, key_seed)

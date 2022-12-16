@@ -11,6 +11,7 @@ import (
 	"crypto/sha512"
 	"crypto/subtle"
 	"encoding"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/cloudflare/circl/blindsign"
 	"github.com/cloudflare/circl/blindsign/blindrsa"
-	"github.com/cloudflare/circl/expander"
 	"github.com/cloudflare/circl/group"
 	"github.com/cloudflare/circl/math/polynomial"
 	"github.com/cloudflare/circl/oprf"
@@ -42,40 +42,51 @@ type SecretSplitter interface {
 type ShamirSplitter struct {
 }
 
-func hashToField(msg []byte, count int) []group.Scalar {
-	// XXX(spec): we didn't specify the parameters for hash-to-field
-	xmd := expander.NewExpanderMD(crypto.SHA512, []byte("STAR"))
-	us := make([]big.Int, count)
+func hashToField(msg []byte, ctx []byte) group.Scalar {
+	// // XXX(spec): we didn't specify the parameters for hash-to-field
+	// xmd := expander.NewExpanderMD(crypto.SHA512, []byte("STAR"))
+	// us := make([]big.Int, 1)
 
-	// p = 2^252 + 27742317777372353535851937790883648493
-	// L = ceil((ceil(log2(p)) + k) / 8)
-	// sage: p = 2^252 + 27742317777372353535851937790883648493
-	// sage: k = 128
-	// sage: L = ceil((ceil(log(p, 2)) + k) / 8)
-	// sage: hex(p)
-	// '0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed'
-	// sage: hex(k)
-	// '0x80'
-	// sage: hex(L)
-	// '0x30'
+	// // p = 2^252 + 27742317777372353535851937790883648493
+	// // L = ceil((ceil(log2(p)) + k) / 8)
+	// // sage: p = 2^252 + 27742317777372353535851937790883648493
+	// // sage: k = 128
+	// // sage: L = ceil((ceil(log(p, 2)) + k) / 8)
+	// // sage: hex(p)
+	// // '0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed'
+	// // sage: hex(k)
+	// // '0x80'
+	// // sage: hex(L)
+	// // '0x30'
 
-	// XXX(spec): just use Ristretto's field for Scalars here?
+	// // XXX(spec): just use Ristretto's field for Scalars here?
 	p := new(big.Int)
 	p.SetString("1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed", 16)
-	L := uint(0x30)
+	// L := uint(0x30)
 
-	group.HashToField(us, msg, xmd, p, L)
-	ints := make([]*big.Int, len(us))
-	for i := range us {
-		ints[i] = &us[i]
-	}
+	// group.HashToField(us, msg, xmd, p, L)
+	// ints := make([]*big.Int, len(us))
+	// for i := range us {
+	// 	ints[i] = &us[i]
+	// }
 
-	scalars := make([]group.Scalar, count)
-	for i := range ints {
-		scalars[i] = group.Ristretto255.NewScalar().SetBigInt(ints[i])
-	}
+	// scalars := make([]group.Scalar, count)
+	// for i := range ints {
+	// 	scalars[i] = group.Ristretto255.NewScalar().SetBigInt(ints[i])
+	// }
 
-	return scalars
+	// return scalars
+
+	// HashToScalar(x, ctx): Implemented by computing SHA-512("FCurve25519" || DST || x) and mapping the output to a Scalar as described in [RISTRETTO], Section 4.4.
+	hashInput := []byte("FCurve25519")
+	hashInput = append(hashInput, ctx...)
+	hashInput = append(hashInput, msg...)
+	digest := sha512.Sum512(hashInput)
+	value := new(big.Int).SetBytes(digest[:])
+	value.Mod(value, p)
+
+	scalar := group.Ristretto255.NewScalar().SetBigInt(value)
+	return scalar
 }
 
 func commit(m, r group.Scalar) group.Element {
@@ -193,7 +204,12 @@ func (s *ShamirSplitter) RandomShare() Share {
 }
 
 func (s *ShamirSplitter) EncodeSecret(secret []byte) []byte {
-	secretCoefficient := hashToField(secret, 1)[0]
+	buffer := make([]byte, 4)
+	binary.BigEndian.PutUint32(buffer, uint32(0))
+	dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+	dst = append(dst, buffer...)
+
+	secretCoefficient := hashToField(secret, dst)
 	baseEnc, err := secretCoefficient.MarshalBinary()
 	if err != nil {
 		panic(err)
@@ -202,8 +218,20 @@ func (s *ShamirSplitter) EncodeSecret(secret []byte) []byte {
 }
 
 func (s *ShamirSplitter) Share(k int, secret, randomness []byte) (Share, []byte) {
-	secretCoefficient := hashToField(secret, 1)[0]
-	coeffs := append([]group.Scalar{secretCoefficient}, hashToField(randomness, k-1)...)
+	buffer := make([]byte, 4)
+	binary.BigEndian.PutUint32(buffer, uint32(0))
+	dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+	dst = append(dst, buffer...)
+	secretCoefficient := hashToField(secret, dst)
+
+	coeffs := []group.Scalar{secretCoefficient}
+	for i := 0; i < k-1; i++ {
+		binary.BigEndian.PutUint32(buffer, uint32(i+1))
+		dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+		dst = append(dst, buffer...)
+		coeffs = append(coeffs, hashToField(randomness, dst))
+	}
+
 	poly := polynomial.New(coeffs)
 	randomPoint := group.Ristretto255.RandomNonZeroScalar(rand.Reader)
 	value := poly.Evaluate(randomPoint)
@@ -381,7 +409,11 @@ func (s *FeldmanSplitter) RandomShare() Share {
 }
 
 func (s *FeldmanSplitter) EncodeSecret(secret []byte) []byte {
-	secretCoefficient := hashToField(secret, 1)[0]
+	buffer := make([]byte, 4)
+	binary.BigEndian.PutUint32(buffer, uint32(0))
+	dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+	dst = append(dst, buffer...)
+	secretCoefficient := hashToField(secret, dst)
 	baseEnc, err := secretCoefficient.MarshalBinary()
 	if err != nil {
 		panic(err)
@@ -390,8 +422,20 @@ func (s *FeldmanSplitter) EncodeSecret(secret []byte) []byte {
 }
 
 func (s *FeldmanSplitter) Share(k int, msg, randomness []byte) (Share, []byte) {
-	secret := hashToField(msg, 1)[0]
-	coeffs := append([]group.Scalar{secret}, hashToField(randomness, k-1)...)
+	buffer := make([]byte, 4)
+	binary.BigEndian.PutUint32(buffer, uint32(0))
+	dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+	dst = append(dst, buffer...)
+	secret := hashToField(msg, dst)
+
+	// coeffs := append([]group.Scalar{secret}, hashToField(randomness, k-1)...)
+	coeffs := []group.Scalar{secret}
+	for i := 0; i < k-1; i++ {
+		binary.BigEndian.PutUint32(buffer, uint32(i+1))
+		dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+		dst = append(dst, buffer...)
+		coeffs = append(coeffs, hashToField(randomness, dst))
+	}
 	poly := polynomial.New(coeffs)
 
 	commitments := make([]group.Element, k)
@@ -570,7 +614,11 @@ func (s *PedersenSplitter) RandomShare() Share {
 }
 
 func (s *PedersenSplitter) EncodeSecret(secret []byte) []byte {
-	secretCoefficient := hashToField(secret, 1)[0]
+	buffer := make([]byte, 4)
+	binary.BigEndian.PutUint32(buffer, uint32(0))
+	dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+	dst = append(dst, buffer...)
+	secretCoefficient := hashToField(secret, dst)
 	baseEnc, err := secretCoefficient.MarshalBinary()
 	if err != nil {
 		panic(err)
@@ -579,17 +627,37 @@ func (s *PedersenSplitter) EncodeSecret(secret []byte) []byte {
 }
 
 func (s *PedersenSplitter) Share(k int, msg, randomness []byte) (Share, []byte) {
-	secret := hashToField(msg, 1)[0]
+	buffer := make([]byte, 4)
+	binary.BigEndian.PutUint32(buffer, uint32(0))
+	dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+	dst = append(dst, buffer...)
+	secret := hashToField(msg, dst)
+
+	// secret := hashToField(msg, 1)[0]
 	t := group.Ristretto255.RandomScalar(rand.Reader)
 
-	coeffs := append([]group.Scalar{secret}, hashToField(randomness, k-1)...)
+	// coeffs := append([]group.Scalar{secret}, hashToField(randomness, k-1)...)
+	coeffs := []group.Scalar{secret}
+	for i := 0; i < k-1; i++ {
+		binary.BigEndian.PutUint32(buffer, uint32(i+1))
+		dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+		dst = append(dst, buffer...)
+		coeffs = append(coeffs, hashToField(randomness, dst))
+	}
 	poly := polynomial.New(coeffs)
 
 	commitSeed := make([]byte, len(randomness))
 	copy(commitSeed, randomness)
 	commitSeed[0] ^= 0xFF
 
-	commitCoeffs := append([]group.Scalar{t}, hashToField(commitSeed, k-1)...)
+	// commitCoeffs := append([]group.Scalar{t}, hashToField(commitSeed, k-1)...)
+	commitCoeffs := []group.Scalar{t}
+	for i := 0; i < k-1; i++ {
+		binary.BigEndian.PutUint32(buffer, uint32(i+1))
+		dst := []byte{0x00, 0x00} //, str(t) || "-" || str(0)
+		dst = append(dst, buffer...)
+		commitCoeffs = append(commitCoeffs, hashToField(commitSeed, dst))
+	}
 	polyCommit := polynomial.New(commitCoeffs)
 
 	polyCommitments := make([]group.Element, k)
