@@ -37,7 +37,7 @@ type SecretSplitter interface {
 	RandomShare() Share
 	EncodeSecret(msg []byte) []byte
 	Share(k int, msg, randomness []byte) (Share, []byte)
-	Recover(k int, shares []Share) ([]byte, error)
+	Recover(k int, shares []Share, validate bool) ([]byte, error)
 }
 
 type ShamirSplitter struct {
@@ -110,6 +110,7 @@ type Share interface {
 	Input() group.Scalar
 	Output() group.Scalar
 	Commitment() []byte
+	Verify() error
 
 	// BinaryMarshaler returns a byte representation of the scalar.
 	encoding.BinaryMarshaler
@@ -138,6 +139,10 @@ func (s *ShamirShare) Output() group.Scalar {
 
 func (s *ShamirShare) Commitment() []byte {
 	return s.commitment
+}
+
+func (s *ShamirShare) Verify() error {
+	return nil
 }
 
 func (s *ShamirShare) MarshalBinary() ([]byte, error) {
@@ -251,7 +256,7 @@ func (s *ShamirSplitter) Share(k int, secret, randomness []byte) (Share, []byte)
 	return &ShamirShare{randomPoint, value, commitment[:]}, baseEnc
 }
 
-func (s *ShamirSplitter) Recover(k int, shares []Share) ([]byte, error) {
+func (s *ShamirSplitter) Recover(k int, shares []Share, validate bool) ([]byte, error) {
 	if len(shares) < k {
 		return nil, fmt.Errorf("Invalid share count")
 	}
@@ -308,6 +313,21 @@ func (s *FeldmanShare) Commitment() []byte {
 	}
 
 	return commitmentEnc
+}
+
+func (s *FeldmanShare) Verify() error {
+	expectedValue := group.Ristretto255.NewElement().MulGen(s.Output()) // g^y, y = f(r)
+	actualValue := group.Ristretto255.Identity()
+	for j := 0; j < len(s.commitments); j++ {
+		power := new(big.Int).Exp(s.InputRaw(), new(big.Int).SetInt64(int64(j)), nil)
+		p := group.Ristretto255.NewScalar().SetBigInt(power)          // power = pow(r, j)
+		t := group.Ristretto255.NewElement().Mul(s.commitments[j], p) // t = commitment^power
+		actualValue.Add(actualValue, t)
+	}
+	if !expectedValue.IsEqual(actualValue) {
+		return fmt.Errorf("Verification failed")
+	}
+	return nil
 }
 
 func (s *FeldmanShare) MarshalBinary() ([]byte, error) {
@@ -475,40 +495,44 @@ func (s *FeldmanSplitter) Share(k int, msg, randomness []byte) (Share, []byte) {
 	}, baseEnc
 }
 
-func (s *FeldmanSplitter) Recover(k int, shares []Share) ([]byte, error) {
+func (s *FeldmanSplitter) Recover(k int, shares []Share, validate bool) ([]byte, error) {
 	if len(shares) < k {
 		return nil, fmt.Errorf("Invalid share count")
 	}
 
 	// Recover the commitment elements from the actual commitment
 	commitments := make([][]group.Element, len(shares))
-	for i := range shares {
-		commitments[i] = make([]group.Element, k)
-		for j := 0; j < k; j++ {
-			commitment := group.Ristretto255.NewElement()
-			start := (j * 32)     // sizeof(Ristretto element)
-			end := ((j + 1) * 32) // sizeof(Ristretto element)
-			err := commitment.UnmarshalBinary(shares[i].Commitment()[start:end])
-			if err != nil {
-				return nil, err
+	if validate {
+		for i := range shares {
+			commitments[i] = make([]group.Element, k)
+			for j := 0; j < k; j++ {
+				commitment := group.Ristretto255.NewElement()
+				start := (j * 32)     // sizeof(Ristretto element)
+				end := ((j + 1) * 32) // sizeof(Ristretto element)
+				err := commitment.UnmarshalBinary(shares[i].Commitment()[start:end])
+				if err != nil {
+					return nil, err
+				}
+				commitments[i][j] = commitment
 			}
-			commitments[i][j] = commitment
 		}
 	}
 
 	xs := make([]group.Scalar, len(shares))
 	ys := make([]group.Scalar, len(shares))
 	for i := range shares {
-		expectedValue := group.Ristretto255.NewElement().MulGen(shares[i].Output()) // g^y, y = f(r)
-		actualValue := group.Ristretto255.Identity()
-		for j := 0; j < k; j++ {
-			power := new(big.Int).Exp(shares[i].InputRaw(), new(big.Int).SetInt64(int64(j)), nil)
-			p := group.Ristretto255.NewScalar().SetBigInt(power)           // power = pow(r, j)
-			t := group.Ristretto255.NewElement().Mul(commitments[i][j], p) // t = commitment^power
-			actualValue.Add(actualValue, t)
-		}
-		if !expectedValue.IsEqual(actualValue) {
-			return nil, fmt.Errorf("Verification failed")
+		if validate {
+			expectedValue := group.Ristretto255.NewElement().MulGen(shares[i].Output()) // g^y, y = f(r)
+			actualValue := group.Ristretto255.Identity()
+			for j := 0; j < k; j++ {
+				power := new(big.Int).Exp(shares[i].InputRaw(), new(big.Int).SetInt64(int64(j)), nil)
+				p := group.Ristretto255.NewScalar().SetBigInt(power)           // power = pow(r, j)
+				t := group.Ristretto255.NewElement().Mul(commitments[i][j], p) // t = commitment^power
+				actualValue.Add(actualValue, t)
+			}
+			if !expectedValue.IsEqual(actualValue) {
+				return nil, fmt.Errorf("Verification failed")
+			}
 		}
 
 		xs[i] = shares[i].Input()
@@ -561,6 +585,21 @@ func (s *PedersenShare) Commitment() []byte {
 	}
 
 	return commitmentEnc
+}
+
+func (s *PedersenShare) Verify() error {
+	commitment := commit(s.y1, s.y2) // E(s_i, t_i), s_i = F(i) and t_i = G(i)
+	actualCommitment := group.Ristretto255.Identity()
+	for j := 0; j < len(s.polyCommitments); j++ {
+		power := new(big.Int).Exp(s.r, new(big.Int).SetInt64(int64(j)), nil)
+		p := group.Ristretto255.NewScalar().SetBigInt(power)              // power = pow(r, j)
+		t := group.Ristretto255.NewElement().Mul(s.polyCommitments[j], p) // t = commitment^power
+		actualCommitment.Add(actualCommitment, t)
+	}
+	if !commitment.IsEqual(actualCommitment) {
+		return fmt.Errorf("Verification failed")
+	}
+	return nil
 }
 
 func (s *PedersenShare) MarshalBinary() ([]byte, error) {
@@ -704,7 +743,7 @@ func (s *PedersenSplitter) Share(k int, msg, randomness []byte) (Share, []byte) 
 	}, baseEnc
 }
 
-func (s *PedersenSplitter) Recover(k int, shares []Share) ([]byte, error) {
+func (s *PedersenSplitter) Recover(k int, shares []Share, validate bool) ([]byte, error) {
 	if len(shares) < k {
 		return nil, fmt.Errorf("Invalid share count")
 	}
@@ -718,16 +757,18 @@ func (s *PedersenSplitter) Recover(k int, shares []Share) ([]byte, error) {
 	xs := make([]group.Scalar, len(shares))
 	ys := make([]group.Scalar, len(shares))
 	for i := range shares {
-		commitment := commit(pedersenShares[i].y1, pedersenShares[i].y2) // E(s_i, t_i), s_i = F(i) and t_i = G(i)
-		actualCommitment := group.Ristretto255.Identity()
-		for j := 0; j < k; j++ {
-			power := new(big.Int).Exp(pedersenShares[i].r, new(big.Int).SetInt64(int64(j)), nil)
-			p := group.Ristretto255.NewScalar().SetBigInt(power)                              // power = pow(r, j)
-			t := group.Ristretto255.NewElement().Mul(pedersenShares[i].polyCommitments[j], p) // t = commitment^power
-			actualCommitment.Add(actualCommitment, t)
-		}
-		if !commitment.IsEqual(actualCommitment) {
-			return nil, fmt.Errorf("Verification failed")
+		if validate {
+			commitment := commit(pedersenShares[i].y1, pedersenShares[i].y2) // E(s_i, t_i), s_i = F(i) and t_i = G(i)
+			actualCommitment := group.Ristretto255.Identity()
+			for j := 0; j < k; j++ {
+				power := new(big.Int).Exp(pedersenShares[i].r, new(big.Int).SetInt64(int64(j)), nil)
+				p := group.Ristretto255.NewScalar().SetBigInt(power)                              // power = pow(r, j)
+				t := group.Ristretto255.NewElement().Mul(pedersenShares[i].polyCommitments[j], p) // t = commitment^power
+				actualCommitment.Add(actualCommitment, t)
+			}
+			if !commitment.IsEqual(actualCommitment) {
+				return nil, fmt.Errorf("Verification failed")
+			}
 		}
 
 		xs[i] = pedersenShares[i].x

@@ -131,11 +131,11 @@ func TestSTAR(t *testing.T) {
 
 		// Throw each report at the aggregator
 		for i := range decodedReports {
-			aggregator.Consume(*decodedReports[i])
+			aggregator.Consume(*decodedReports[i], false)
 		}
 
 		// Phase 3: aggregate the bucket
-		output, err := aggregator.AggregateBucket(decodedReports[i].randShare.Commitment())
+		output, err := aggregator.AggregateBucket(decodedReports[i].randShare.Commitment(), true)
 		if expectSuccess && err != nil {
 			t.Fatal(err)
 		} else if !expectSuccess && err == nil {
@@ -156,14 +156,14 @@ func TestSTAR(t *testing.T) {
 }
 
 type benchmarkConfig struct {
-	name              string
-	splitter          SecretSplitter
-	kdf               KDF
-	aead              KCAEAD
-	inputCount        int // Domain size
-	inputLen          int // Input length size
-	sampleCount       int // Population sample size
-	thresholdFraction float64
+	name        string
+	splitter    SecretSplitter
+	kdf         KDF
+	aead        KCAEAD
+	inputCount  int // Domain size
+	inputLen    int // Input length size
+	sampleCount int // Population sample size
+	threshold   int // Threshold size (typically a fraction of the population sample size)
 }
 
 func generateRandomInputs(b *testing.B, count, length int) [][]byte {
@@ -189,8 +189,7 @@ func generateRandomInputs(b *testing.B, count, length int) [][]byte {
 }
 
 func runBenchmark(b *testing.B, config benchmarkConfig) {
-	threshold := int(float64(config.sampleCount) * config.thresholdFraction)
-	aggregateConfig := NewAggregatorConfiguration(threshold, config.splitter, config.kdf, config.aead)
+	aggregateConfig := NewAggregatorConfiguration(config.threshold, config.splitter, config.kdf, config.aead)
 	randomizerConfig := NewDefaultRandomizerConfig()
 
 	randomInputs := generateRandomInputs(b, config.inputCount, config.inputLen)
@@ -211,11 +210,12 @@ func runBenchmark(b *testing.B, config benchmarkConfig) {
 	client := NewClient(aggregateConfig, randomizerConfig.PublicConfig())
 	fixedMetadata := []byte("")
 
-	name := fmt.Sprintf("(%s-%s-%d-%d-%d-%d)", aggregateConfig.Name(), randomizerConfig.Name(), config.inputLen, config.inputCount, config.sampleCount, threshold)
+	name := fmt.Sprintf("%s-%s-%d-%d-%d-%d", aggregateConfig.Name(), randomizerConfig.Name(), config.inputLen, config.inputCount, config.sampleCount, config.threshold)
+	fmt.Println(name)
 
 	var err error
 	var reports []Report
-	b.Run(fmt.Sprintf("Report-%s", name), func(b *testing.B) {
+	b.Run(fmt.Sprintf("(Report-%s)", name), func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
 			reports = make([]Report, config.sampleCount)
 			for i := 0; i < config.sampleCount; i++ {
@@ -227,24 +227,73 @@ func runBenchmark(b *testing.B, config benchmarkConfig) {
 		}
 	})
 
-	b.Run(fmt.Sprintf("Aggregate-%s", name), func(b *testing.B) {
+	b.Run(fmt.Sprintf("(Prepare-%s)", name), func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
 			aggregator := NewAggregator(randomizerConfig.PublicConfig(), aggregateConfig)
 
 			// Consume each report and place them into buckets
 			for i := 0; i < config.sampleCount; i++ {
-				aggregator.Consume(reports[i])
+				aggregator.Consume(reports[i], true)
 			}
+		}
+	})
 
+	b.Run(fmt.Sprintf("(Aggregate-%s)", name), func(b *testing.B) {
+		rate := float64(0)
+		aggregator := NewAggregator(randomizerConfig.PublicConfig(), aggregateConfig)
+
+		// Consume each report and place them into buckets
+		for i := 0; i < config.sampleCount; i++ {
+			aggregator.Consume(reports[i], true)
+		}
+
+		buckets := aggregator.ReadyBuckets()
+		for n := 0; n < b.N; n++ {
 			// Aggregate each bucket
-			buckets := aggregator.ReadyBuckets()
+			aggregateRate := float64(0)
 			for i := range buckets {
-				_, err := aggregator.AggregateBucket(buckets[i])
+				bucketSize, err := aggregator.BucketSize(buckets[i])
+				if err != nil {
+					b.Fatal(err)
+				}
+				aggregateRate += float64(bucketSize)
+				_, err = aggregator.AggregateBucket(buckets[i], false)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+			rate += aggregateRate
 		}
+		b.ReportMetric(rate/float64(b.N), "rate/op")
+	})
+
+	b.Run(fmt.Sprintf("(PrepareAndAggregate-%s)", name), func(b *testing.B) {
+		aggregator := NewAggregator(randomizerConfig.PublicConfig(), aggregateConfig)
+
+		// Consume each report and place them into buckets
+		for i := 0; i < config.sampleCount; i++ {
+			aggregator.Consume(reports[i], false)
+		}
+		buckets := aggregator.ReadyBuckets()
+
+		rate := float64(0)
+		for n := 0; n < b.N; n++ {
+			// Aggregate each bucket
+			aggregateRate := float64(0)
+			for i := range buckets {
+				bucketSize, err := aggregator.BucketSize(buckets[i])
+				if err != nil {
+					b.Fatal(err)
+				}
+				aggregateRate += float64(bucketSize)
+				_, err = aggregator.AggregateBucket(buckets[i], true)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			rate += aggregateRate
+		}
+		b.ReportMetric(rate/float64(b.N), "rate/op")
 	})
 }
 
@@ -254,43 +303,44 @@ func BenchmarkSTAR(b *testing.B) {
 	basicSplitter := &ShamirSplitter{}
 	aead := Aes128GcmHmacKCAEAD{kdf: kdf}
 
-	benchmarkConfigurations := []benchmarkConfig{
-		{
-			splitter:          basicSplitter,
-			kdf:               kdf,
-			aead:              aead,
-			inputLen:          32,
-			inputCount:        1000,  // 10000,
-			sampleCount:       10000, // 100000,
-			thresholdFraction: 0.01,  // 0.001,
-		},
-		{
-			splitter:          basicSplitter,
-			kdf:               kdf,
-			aead:              aead,
-			inputLen:          32,
-			inputCount:        1000,  // 10000,
-			sampleCount:       10000, // 100000,
-			thresholdFraction: 0.1,   // 0.001,
-		},
-		{
-			splitter:          feldmanSplitter,
-			kdf:               kdf,
-			aead:              aead,
-			inputLen:          32,
-			inputCount:        1000,  // 10000,
-			sampleCount:       10000, // 100000,
-			thresholdFraction: 0.01,  // 0.001,
-		},
-		{
-			splitter:          feldmanSplitter,
-			kdf:               kdf,
-			aead:              aead,
-			inputLen:          32,
-			inputCount:        1000,  // 10000,
-			sampleCount:       10000, // 100000,
-			thresholdFraction: 0.1,   // 0.001,
-		},
+	inputLens := []int{32}                               // []int{32, 64, 128, 256, 512}
+	inputCounts := []int{128}                            // []int{128, 256, 512, 1024}
+	sampleExpansion := []int{2, 4, 6, 8, 10, 12, 14, 16} // []int{2, 4, 8, 16}
+	thresholdFractions := []float64{0.001, 0.01, 0.1}    // []int{0.001, 0.01, 0.1, 0.5}
+
+	benchmarkConfigurations := []benchmarkConfig{}
+	for i := range inputLens {
+		for j := range inputCounts {
+			for k := range sampleExpansion {
+				for l := range thresholdFractions {
+					inputLen := inputLens[i]
+					inputCount := inputCounts[j]
+					sampleCount := inputCount * sampleExpansion[k]
+					threshold := int(thresholdFractions[l] * float64(sampleCount))
+
+					if threshold > 0 {
+						benchmarkConfigurations = append(benchmarkConfigurations, benchmarkConfig{
+							splitter:    basicSplitter,
+							kdf:         kdf,
+							aead:        aead,
+							inputLen:    inputLen,
+							inputCount:  inputCount,
+							sampleCount: sampleCount,
+							threshold:   threshold,
+						})
+						benchmarkConfigurations = append(benchmarkConfigurations, benchmarkConfig{
+							splitter:    feldmanSplitter,
+							kdf:         kdf,
+							aead:        aead,
+							inputLen:    inputLen,
+							inputCount:  inputCount,
+							sampleCount: sampleCount,
+							threshold:   threshold,
+						})
+					}
+				}
+			}
+		}
 	}
 
 	for i := range benchmarkConfigurations {

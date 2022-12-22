@@ -86,13 +86,21 @@ type AggregateOutput struct {
 	invalidReports []Report
 }
 
-func (a *Aggregator) Consume(report Report) {
+func (a *Aggregator) Consume(report Report, validate bool) error {
 	commitmentEnc := hex.EncodeToString(report.randShare.Commitment())
 	_, ok := a.reportSets[commitmentEnc]
 	if !ok {
 		a.reportSets[commitmentEnc] = make([]Report, 0)
 	}
+	if validate {
+		err := report.randShare.Verify()
+		if err != nil {
+			return err
+		}
+	}
+
 	a.reportSets[commitmentEnc] = append(a.reportSets[commitmentEnc], report)
+	return nil
 }
 
 func (a Aggregator) ReadyBuckets() [][]byte {
@@ -105,16 +113,26 @@ func (a Aggregator) ReadyBuckets() [][]byte {
 	return buckets
 }
 
-func (a Aggregator) AggregateBucket(bucket []byte) (*AggregateOutput, error) {
+func (a Aggregator) BucketSize(bucket []byte) (int, error) {
+	reports, ok := a.reportSets[hex.EncodeToString(bucket)]
+	if !ok {
+		return -1, fmt.Errorf("Invalid bucket ID")
+	}
+	return len(reports), nil
+}
+
+func (a Aggregator) AggregateBucket(bucket []byte, validate bool) (*AggregateOutput, error) {
 	reports, ok := a.reportSets[hex.EncodeToString(bucket)]
 	if !ok {
 		return nil, fmt.Errorf("Invalid bucket ID")
 	}
 
-	return a.AggregateReports(reports)
+	return a.AggregateReports(reports, validate)
 }
 
-func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error) {
+// XXX(caw): split this into a "prepare" and "aggregate" step to be closer to the VDAF syntax
+
+func (a Aggregator) AggregateReports(reports []Report, validate bool) (*AggregateOutput, error) {
 	// // Recover the key seed
 	// key_seed = Recover(report_set)
 	shares := make([]Share, len(reports))
@@ -123,7 +141,7 @@ func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error)
 	}
 
 	combiner := a.config.Splitter()
-	keySeed, err := combiner.Recover(a.config.Threshold(), shares)
+	keySeed, err := combiner.Recover(a.config.Threshold(), shares, validate)
 	if err != nil {
 		return nil, err
 	}

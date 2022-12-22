@@ -18,7 +18,7 @@ func TestShamir(t *testing.T) {
 	share3, _ := splitter.Share(k, msg, randomness)
 	shares := []Share{share1, share2, share3}
 
-	recovered, err := splitter.Recover(k, shares)
+	recovered, err := splitter.Recover(k, shares, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestPedersenVSS(t *testing.T) {
 	share3, _ := splitter.Share(k, msg, randomness)
 	shares := []Share{share1, share2, share3}
 
-	recovered, err := splitter.Recover(k, shares)
+	recovered, err := splitter.Recover(k, shares, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestFeldmanVSS(t *testing.T) {
 		}
 	}
 
-	recovered, err := splitter.Recover(k, shares)
+	recovered, err := splitter.Recover(k, shares, true)
 	if err != nil {
 		t.Fatal(err)
 	}
