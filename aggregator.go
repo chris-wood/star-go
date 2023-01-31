@@ -11,24 +11,37 @@ import (
 
 // XXX(caw): rename to public config?
 type AggregatorConfig interface {
+	Name() string
+	Threshold() int
 	Splitter() SecretSplitter
 	KDF() KDF
 	AEAD() KCAEAD
 }
 
 type GenericAggregatorConfiguration struct {
-	splitter SecretSplitter
-	kdf      KDF
-	aead     KCAEAD
+	threshold int
+	splitter  SecretSplitter
+	kdf       KDF
+	aead      KCAEAD
 }
 
-func NewDefaultAggregatorConfiguration() AggregatorConfig {
+func NewDefaultAggregatorConfiguration(threshold int) AggregatorConfig {
 	kdf := HkdfKDF{crypto.SHA256}
 	return GenericAggregatorConfiguration{
-		splitter: &FeldmanSplitter{},
-		kdf:      kdf,
-		aead:     Aes128GcmHmacKCAEAD{kdf: kdf},
+		threshold: threshold,
+		splitter:  &FeldmanSplitter{},
+		kdf:       kdf,
+		aead:      Aes128GcmHmacKCAEAD{kdf: kdf},
 	}
+}
+
+func (c GenericAggregatorConfiguration) Name() string {
+	// XXX(caw): return more than the splitter's name
+	return c.splitter.Name()
+}
+
+func (c GenericAggregatorConfiguration) Threshold() int {
+	return c.threshold
 }
 
 func (c GenericAggregatorConfiguration) Splitter() SecretSplitter {
@@ -43,11 +56,12 @@ func (c GenericAggregatorConfiguration) AEAD() KCAEAD {
 	return c.aead
 }
 
-func NewAggregatorConfiguration(splitter SecretSplitter, kdf KDF, aead KCAEAD) AggregatorConfig {
+func NewAggregatorConfiguration(threshold int, splitter SecretSplitter, kdf KDF, aead KCAEAD) AggregatorConfig {
 	return GenericAggregatorConfiguration{
-		splitter: splitter,
-		kdf:      kdf,
-		aead:     aead,
+		threshold: threshold,
+		splitter:  splitter,
+		kdf:       kdf,
+		aead:      aead,
 	}
 }
 
@@ -72,25 +86,53 @@ type AggregateOutput struct {
 	invalidReports []Report
 }
 
-func (a *Aggregator) Consume(report Report) {
+func (a *Aggregator) Consume(report Report, validate bool) error {
 	commitmentEnc := hex.EncodeToString(report.randShare.Commitment())
 	_, ok := a.reportSets[commitmentEnc]
 	if !ok {
 		a.reportSets[commitmentEnc] = make([]Report, 0)
 	}
+	if validate {
+		err := report.randShare.Verify()
+		if err != nil {
+			return err
+		}
+	}
+
 	a.reportSets[commitmentEnc] = append(a.reportSets[commitmentEnc], report)
+	return nil
 }
 
-func (a Aggregator) AggregateBucket(bucket []byte) (*AggregateOutput, error) {
+func (a Aggregator) ReadyBuckets() [][]byte {
+	buckets := make([][]byte, 0)
+	for _, v := range a.reportSets {
+		if len(v) >= a.config.Threshold() {
+			buckets = append(buckets, v[0].randShare.Commitment())
+		}
+	}
+	return buckets
+}
+
+func (a Aggregator) BucketSize(bucket []byte) (int, error) {
+	reports, ok := a.reportSets[hex.EncodeToString(bucket)]
+	if !ok {
+		return -1, fmt.Errorf("Invalid bucket ID")
+	}
+	return len(reports), nil
+}
+
+func (a Aggregator) AggregateBucket(bucket []byte, validate bool) (*AggregateOutput, error) {
 	reports, ok := a.reportSets[hex.EncodeToString(bucket)]
 	if !ok {
 		return nil, fmt.Errorf("Invalid bucket ID")
 	}
 
-	return a.AggregateReports(reports)
+	return a.AggregateReports(reports, validate)
 }
 
-func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error) {
+// XXX(caw): split this into a "prepare" and "aggregate" step to be closer to the VDAF syntax
+
+func (a Aggregator) AggregateReports(reports []Report, validate bool) (*AggregateOutput, error) {
 	// // Recover the key seed
 	// key_seed = Recover(report_set)
 	shares := make([]Share, len(reports))
@@ -98,21 +140,8 @@ func (a Aggregator) AggregateReports(reports []Report) (*AggregateOutput, error)
 		shares[i] = reports[i].randShare
 	}
 
-	// Require that each commitment is identical
-	var expectedComitment []byte
-	for i := range shares {
-		if expectedComitment == nil {
-			expectedComitment = shares[i].Commitment()
-		} else {
-			commitment := shares[i].Commitment()
-			if !bytes.Equal(expectedComitment, commitment) {
-				return nil, fmt.Errorf("Invalid share set")
-			}
-		}
-	}
-
 	combiner := a.config.Splitter()
-	keySeed, err := combiner.Recover(REPORT_THRESHOLD, shares)
+	keySeed, err := combiner.Recover(a.config.Threshold(), shares, validate)
 	if err != nil {
 		return nil, err
 	}
